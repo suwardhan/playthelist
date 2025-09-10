@@ -1,3 +1,5 @@
 spotipy
 ytmusicapi
 openai
+streamlit
+python-dotenv

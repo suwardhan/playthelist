@@ -2,6 +2,7 @@
 
 import os
 import re
+import logging
 from urllib.parse import urlparse, parse_qs
 from difflib import get_close_matches
 import spotipy
@@ -13,11 +14,33 @@ from dotenv import load_dotenv
 # ---------- LOAD ENV ----------
 load_dotenv()
 
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+# Try to load from Streamlit secrets first (for deployment), then fallback to .env
+try:
+    import streamlit as st
+    SPOTIFY_CLIENT_ID = st.secrets.get("SPOTIFY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
+    SPOTIFY_CLIENT_SECRET = st.secrets.get("SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET")
+    SPOTIFY_REDIRECT_URI = st.secrets.get("SPOTIFY_REDIRECT_URI") or os.getenv("SPOTIFY_REDIRECT_URI")
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+except:
+    # Fallback to environment variables
+    SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+    SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+    SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 SPOTIFY_SCOPE = os.getenv("SPOTIFY_SCOPE", "playlist-modify-public")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Validate required environment variables
+required_vars = {
+    "SPOTIFY_CLIENT_ID": SPOTIFY_CLIENT_ID,
+    "SPOTIFY_CLIENT_SECRET": SPOTIFY_CLIENT_SECRET,
+    "SPOTIFY_REDIRECT_URI": SPOTIFY_REDIRECT_URI,
+    "OPENAI_API_KEY": OPENAI_API_KEY
+}
+
+missing_vars = [var for var, value in required_vars.items() if not value]
+if missing_vars:
+    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -48,18 +71,22 @@ def detect_platform(url):
 
 def ai_best_match(query, candidates):
     """Use AI to pick the best candidate."""
-    prompt = f"""
-    You are helping match songs across platforms.
-    Original: "{query}"
-    Candidates: {candidates}
-    Pick the best candidate that matches title and artist. If none fit, return "NONE".
-    """
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        prompt = f"""
+        You are helping match songs across platforms.
+        Original: "{query}"
+        Candidates: {candidates}
+        Pick the best candidate that matches title and artist. If none fit, return "NONE".
+        """
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"AI matching failed: {str(e)}")
+        return "NONE"
 
 def fallback_match(query, candidates):
     match = get_close_matches(query, candidates, n=1, cutoff=0.7)
@@ -67,14 +94,18 @@ def fallback_match(query, candidates):
 
 # ---------- YOUTUBE ----------
 def get_youtube_tracks(playlist_id):
-    playlist = ytmusic.get_playlist(playlist_id, limit=500)
-    tracks = []
-    for track in playlist['tracks']:
-        title = clean_title(track['title'])
-        artist = track['artists'][0]['name'] if track['artists'] else ""
-        tracks.append((title, artist))
-    playlist_title = playlist.get('title', 'Imported Playlist')
-    return tracks, playlist_title
+    try:
+        playlist = ytmusic.get_playlist(playlist_id, limit=500)
+        tracks = []
+        for track in playlist['tracks']:
+            title = clean_title(track['title'])
+            artist = track['artists'][0]['name'] if track['artists'] else ""
+            tracks.append((title, artist))
+        playlist_title = playlist.get('title', 'Imported Playlist')
+        return tracks, playlist_title
+    except Exception as e:
+        logging.error(f"Failed to get YouTube tracks: {str(e)}")
+        raise ValueError(f"Could not access YouTube playlist: {str(e)}")
 
 def search_ytmusic(title, artist):
     query = f"{title} {artist}"
@@ -95,42 +126,54 @@ def create_youtube_playlist(name, description, video_ids):
 
 # ---------- SPOTIFY ----------
 def get_spotify_tracks(playlist_id):
-    results = sp.playlist_tracks(playlist_id)
-    tracks = []
-    for item in results['items']:
-        track = item['track']
-        title = clean_title(track['name'])
-        artist = track['artists'][0]['name'] if track['artists'] else ""
-        tracks.append((title, artist))
-    playlist_title = sp.playlist(playlist_id)['name']
-    return tracks, playlist_title
+    try:
+        results = sp.playlist_tracks(playlist_id)
+        tracks = []
+        for item in results['items']:
+            track = item['track']
+            title = clean_title(track['name'])
+            artist = track['artists'][0]['name'] if track['artists'] else ""
+            tracks.append((title, artist))
+        playlist_title = sp.playlist(playlist_id)['name']
+        return tracks, playlist_title
+    except Exception as e:
+        logging.error(f"Failed to get Spotify tracks: {str(e)}")
+        raise ValueError(f"Could not access Spotify playlist: {str(e)}")
 
 def search_spotify(title, artist):
     """Robust Spotify search with fallbacks."""
-    query = f"track:{title} artist:{artist}"
-    results = sp.search(q=query, type="track", limit=5)
-    if results['tracks']['items']:
-        return results['tracks']['items'][0]['uri']
+    try:
+        query = f"track:{title} artist:{artist}"
+        results = sp.search(q=query, type="track", limit=5)
+        if results['tracks']['items']:
+            return results['tracks']['items'][0]['uri']
 
-    results = sp.search(q=f"track:{title}", type="track", limit=5)
-    if results['tracks']['items']:
-        return results['tracks']['items'][0]['uri']
+        results = sp.search(q=f"track:{title}", type="track", limit=5)
+        if results['tracks']['items']:
+            return results['tracks']['items'][0]['uri']
 
-    candidates = [f"{r['name']} {r['artists'][0]['name']}" for r in results['tracks']['items']]
-    best = ai_best_match(f"{title} {artist}", candidates)
-    if best == "NONE":
-        best = fallback_match(f"{title} {artist}", candidates)
-    if best:
-        for r in results['tracks']['items']:
-            candidate = f"{r['name']} {r['artists'][0]['name']}"
-            if candidate == best:
-                return r['uri']
+        candidates = [f"{r['name']} {r['artists'][0]['name']}" for r in results['tracks']['items']]
+        best = ai_best_match(f"{title} {artist}", candidates)
+        if best == "NONE":
+            best = fallback_match(f"{title} {artist}", candidates)
+        if best:
+            for r in results['tracks']['items']:
+                candidate = f"{r['name']} {r['artists'][0]['name']}"
+                if candidate == best:
+                    return r['uri']
 
-    print(f"❌ Could not find: {title} - {artist}")
-    return None
+        logging.warning(f"Could not find: {title} - {artist}")
+        return None
+    except Exception as e:
+        logging.error(f"Spotify search failed for {title} - {artist}: {str(e)}")
+        return None
 
 def create_spotify_playlist(user_id, name):
-    return sp.user_playlist_create(user=user_id, name=name, public=True)
+    try:
+        return sp.user_playlist_create(user=user_id, name=name, public=True)
+    except Exception as e:
+        logging.error(f"Failed to create Spotify playlist: {str(e)}")
+        raise ValueError(f"Could not create Spotify playlist: {str(e)}")
 
 # ---------- URL PARSING ----------
 def extract_youtube_playlist_id(url):

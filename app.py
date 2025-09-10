@@ -2,6 +2,91 @@ import streamlit as st
 import os
 from playlist_agent import transfer_playlist, detect_platform
 import time
+import re
+from urllib.parse import urlparse
+from collections import defaultdict
+from datetime import datetime, timedelta
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
+)
+
+# Rate limiting storage (in production, use Redis or database)
+if 'user_requests' not in st.session_state:
+    st.session_state.user_requests = defaultdict(list)
+
+def validate_playlist_url(url):
+    """Validate and sanitize playlist URLs"""
+    if not url or not isinstance(url, str):
+        return False, "Invalid URL"
+    
+    # Check URL length
+    if len(url) > 500:
+        return False, "URL too long"
+    
+    # Validate URL format
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme in ['http', 'https']:
+            return False, "Invalid URL scheme"
+    except:
+        return False, "Invalid URL format"
+    
+    # Check for supported platforms
+    if not detect_platform(url):
+        return False, "Unsupported platform"
+    
+    return True, "Valid"
+
+def check_rate_limit(max_requests=3, window_minutes=60):
+    """Check if user has exceeded rate limit"""
+    user_id = st.session_state.get('user_id', 'anonymous')
+    now = datetime.now()
+    window_start = now - timedelta(minutes=window_minutes)
+    
+    # Clean old requests
+    st.session_state.user_requests[user_id] = [
+        req_time for req_time in st.session_state.user_requests[user_id] 
+        if req_time > window_start
+    ]
+    
+    if len(st.session_state.user_requests[user_id]) >= max_requests:
+        return False, f"Rate limit exceeded. Max {max_requests} requests per {window_minutes} minutes."
+    
+    # Add current request
+    st.session_state.user_requests[user_id].append(now)
+    return True, "OK"
+
+def safe_transfer_playlist(url, target):
+    """Wrapper with error handling and rate limiting"""
+    try:
+        # Check rate limit
+        rate_ok, rate_message = check_rate_limit()
+        if not rate_ok:
+            logging.warning(f"Rate limit exceeded for user: {st.session_state.get('user_id', 'anonymous')}")
+            return {"error": rate_message}
+        
+        # Validate input
+        is_valid, message = validate_playlist_url(url)
+        if not is_valid:
+            logging.warning(f"Invalid URL: {url} - {message}")
+            return {"error": message}
+        
+        # Perform transfer
+        result = transfer_playlist(url, target)
+        logging.info(f"Successful transfer: {url} -> {target}")
+        return result
+        
+    except Exception as e:
+        logging.error(f"Transfer failed: {str(e)}")
+        return {"error": "Transfer failed. Please try again."}
 
 # Page configuration
 st.set_page_config(
@@ -112,6 +197,16 @@ with st.sidebar:
     - `SPOTIFY_REDIRECT_URI`
     - `OPENAI_API_KEY`
     """)
+    
+    st.header("⚡ Rate Limits")
+    st.markdown("""
+    **Current limits:**
+    - 3 transfers per hour per user
+    - Input validation on all URLs
+    - Automatic error handling
+    
+    **For higher limits, contact support.**
+    """)
 
 # Main content area
 col1, col2 = st.columns([2, 1])
@@ -168,27 +263,32 @@ with col1:
                         progress_bar.progress(80)
                         time.sleep(1)
                         
-                        # Perform actual transfer
-                        result = transfer_playlist(playlist_url, target=target_platform)
+                        # Perform actual transfer with security checks
+                        result = safe_transfer_playlist(playlist_url, target=target_platform)
                         
                         progress_bar.progress(100)
                         status_text.text("✅ Transfer completed!")
                         
                         # Display results
-                        st.markdown('<div class="success-box">', unsafe_allow_html=True)
-                        st.success("🎉 Playlist transferred successfully!")
-                        st.markdown(f"**New Playlist:** [{result['playlist_url']}]({result['playlist_url']})")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        
-                        # Show missing tracks if any
-                        if result.get('missing'):
-                            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                            st.warning(f"⚠️ {len(result['missing'])} tracks could not be found:")
-                            for track in result['missing']:
-                                st.text(f"• {track}")
+                        if 'error' in result:
+                            st.markdown('<div class="error-box">', unsafe_allow_html=True)
+                            st.error(f"❌ {result['error']}")
                             st.markdown('</div>', unsafe_allow_html=True)
                         else:
-                            st.success("🎯 All tracks were successfully transferred!")
+                            st.markdown('<div class="success-box">', unsafe_allow_html=True)
+                            st.success("🎉 Playlist transferred successfully!")
+                            st.markdown(f"**New Playlist:** [{result['playlist_url']}]({result['playlist_url']})")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            
+                            # Show missing tracks if any
+                            if result.get('missing'):
+                                st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+                                st.warning(f"⚠️ {len(result['missing'])} tracks could not be found:")
+                                for track in result['missing']:
+                                    st.text(f"• {track}")
+                                st.markdown('</div>', unsafe_allow_html=True)
+                            else:
+                                st.success("🎯 All tracks were successfully transferred!")
                             
                     except Exception as e:
                         progress_bar.progress(0)

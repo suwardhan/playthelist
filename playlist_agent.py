@@ -1,21 +1,24 @@
-from dotenv import load_dotenv
+# playlist_agent.py
+
 import os
-
-load_dotenv()  # load variables from .env
-
-from ytmusicapi import YTMusic
+import re
+from urllib.parse import urlparse, parse_qs
+from difflib import get_close_matches
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
-import re
+from ytmusicapi import YTMusic
 import openai
+from dotenv import load_dotenv
 
-# ---------- CONFIG ----------
-SPOTIFY_CLIENT_ID = "YOUR_SPOTIFY_CLIENT_ID"
-SPOTIFY_CLIENT_SECRET = "YOUR_SPOTIFY_CLIENT_SECRET"
-SPOTIFY_REDIRECT_URI = "http://localhost:8888/callback"
-SPOTIFY_SCOPE = "playlist-modify-public"
+# ---------- LOAD ENV ----------
+load_dotenv()
 
-OPENAI_API_KEY = "YOUR_OPENAI_KEY"
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
+SPOTIFY_SCOPE = os.getenv("SPOTIFY_SCOPE", "playlist-modify-public")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 openai.api_key = OPENAI_API_KEY
 
 # ---------- INIT ----------
@@ -29,7 +32,11 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
 
 # ---------- HELPERS ----------
 def clean_title(title):
-    return re.sub(r"\s*\(.*?\)", "", title).strip()
+    """Remove parentheses/brackets and unnecessary words but keep essential punctuation."""
+    title = re.sub(r"[\(\[].*?[\)\]]", "", title)
+    title = re.sub(r"(official video|music video|lyrics|audio)", "", title, flags=re.I)
+    title = re.sub(r"\s+", " ", title)
+    return title.strip()
 
 def detect_platform(url):
     if "music.youtube.com" in url or "youtu.be" in url or "youtube.com" in url:
@@ -40,21 +47,23 @@ def detect_platform(url):
         return None
 
 def ai_best_match(query, candidates):
-    """Use AI to pick the best match from a list of candidate results."""
+    """Use AI to pick the best candidate."""
     prompt = f"""
     You are helping match songs across platforms.
     Original: "{query}"
     Candidates: {candidates}
-
-    Pick the best candidate that matches title and artist.
-    If none fit, return "NONE".
+    Pick the best candidate that matches title and artist. If none fit, return "NONE".
     """
-    response = openai.ChatCompletion.create(
+    response = openai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
-    return response.choices[0].message["content"].strip()
+    return response.choices[0].message.content.strip()
+
+def fallback_match(query, candidates):
+    match = get_close_matches(query, candidates, n=1, cutoff=0.7)
+    return match[0] if match else None
 
 # ---------- YOUTUBE ----------
 def get_youtube_tracks(playlist_id):
@@ -63,14 +72,18 @@ def get_youtube_tracks(playlist_id):
     for track in playlist['tracks']:
         title = clean_title(track['title'])
         artist = track['artists'][0]['name'] if track['artists'] else ""
-        tracks.append(f"{title} {artist}")
-    return tracks
+        tracks.append((title, artist))
+    playlist_title = playlist.get('title', 'Imported Playlist')
+    return tracks, playlist_title
 
-def search_ytmusic(query):
+def search_ytmusic(title, artist):
+    query = f"{title} {artist}"
     results = ytmusic.search(query, filter="songs")
     candidates = [f"{r['title']} {r['artists'][0]['name']}" for r in results[:5]]
     best = ai_best_match(query, candidates)
-    if best != "NONE":
+    if best == "NONE":
+        best = fallback_match(query, candidates)
+    if best:
         for r in results:
             candidate = f"{r['title']} {r['artists'][0]['name']}"
             if candidate == best:
@@ -78,7 +91,7 @@ def search_ytmusic(query):
     return None
 
 def create_youtube_playlist(name, description, video_ids):
-    return ytmusic.create_playlist(name, description, video_ids)
+    raise NotImplementedError("YTMusic playlist creation requires YouTube Data API.")
 
 # ---------- SPOTIFY ----------
 def get_spotify_tracks(playlist_id):
@@ -88,66 +101,88 @@ def get_spotify_tracks(playlist_id):
         track = item['track']
         title = clean_title(track['name'])
         artist = track['artists'][0]['name'] if track['artists'] else ""
-        tracks.append(f"{title} {artist}")
-    return tracks
+        tracks.append((title, artist))
+    playlist_title = sp.playlist(playlist_id)['name']
+    return tracks, playlist_title
 
-def search_spotify(query):
+def search_spotify(title, artist):
+    """Robust Spotify search with fallbacks."""
+    query = f"track:{title} artist:{artist}"
     results = sp.search(q=query, type="track", limit=5)
+    if results['tracks']['items']:
+        return results['tracks']['items'][0]['uri']
+
+    results = sp.search(q=f"track:{title}", type="track", limit=5)
+    if results['tracks']['items']:
+        return results['tracks']['items'][0]['uri']
+
     candidates = [f"{r['name']} {r['artists'][0]['name']}" for r in results['tracks']['items']]
-    best = ai_best_match(query, candidates)
-    if best != "NONE":
+    best = ai_best_match(f"{title} {artist}", candidates)
+    if best == "NONE":
+        best = fallback_match(f"{title} {artist}", candidates)
+    if best:
         for r in results['tracks']['items']:
             candidate = f"{r['name']} {r['artists'][0]['name']}"
             if candidate == best:
                 return r['uri']
+
+    print(f"❌ Could not find: {title} - {artist}")
     return None
 
 def create_spotify_playlist(user_id, name):
     return sp.user_playlist_create(user=user_id, name=name, public=True)
+
+# ---------- URL PARSING ----------
+def extract_youtube_playlist_id(url):
+    query = parse_qs(urlparse(url).query)
+    return query.get("list", [None])[0]
+
+def extract_spotify_playlist_id(url):
+    path = urlparse(url).path
+    return path.split("playlist/")[1] if "playlist/" in path else None
 
 # ---------- AGENT ----------
 def transfer_playlist(url, target="spotify"):
     platform = detect_platform(url)
     if not platform:
         raise ValueError("Unsupported playlist URL")
-
     print(f"Detected source: {platform}, target: {target}")
 
     if platform == "youtube":
-        playlist_id = url.split("list=")[1].split("&")[0]
-        tracks = get_youtube_tracks(playlist_id)
+        playlist_id = extract_youtube_playlist_id(url)
+        tracks, playlist_title = get_youtube_tracks(playlist_id)
     elif platform == "spotify":
-        playlist_id = url.split("playlist/")[1].split("?")[0]
-        tracks = get_spotify_tracks(playlist_id)
+        playlist_id = extract_spotify_playlist_id(url)
+        tracks, playlist_title = get_spotify_tracks(playlist_id)
 
     if target == "spotify":
         user_id = sp.me()['id']
-        new_playlist = create_spotify_playlist(user_id, "Imported Playlist")
+        new_playlist = create_spotify_playlist(user_id, playlist_title)
         uris, missing = [], []
-        for track in tracks:
-            uri = search_spotify(track)
+        for title, artist in tracks:
+            uri = search_spotify(title, artist)
             if uri:
                 uris.append(uri)
             else:
-                missing.append(track)
+                missing.append(f"{title} - {artist}")
         if uris:
             sp.playlist_add_items(new_playlist['id'], uris)
         return {"playlist_url": new_playlist['external_urls']['spotify'], "missing": missing}
 
     elif target == "youtube":
         video_ids, missing = [], []
-        for track in tracks:
-            vid = search_ytmusic(track)
+        for title, artist in tracks:
+            vid = search_ytmusic(title, artist)
             if vid:
                 video_ids.append(vid)
             else:
-                missing.append(track)
-        new_playlist_id = create_youtube_playlist("Imported Playlist", "Created by AI Agent", video_ids)
+                missing.append(f"{title} - {artist}")
+        new_playlist_id = create_youtube_playlist(playlist_title, "Created by AI Agent", video_ids)
         return {"playlist_url": f"https://music.youtube.com/playlist?list={new_playlist_id}", "missing": missing}
 
-
+# ---------- MAIN ----------
 if __name__ == "__main__":
-    url = "https://www.youtube.com/playlist?list=PLppQ61iuprWiip1EbM0MwDcjj7nhUnK0B"
+    url = "https://www.youtube.com/playlist?list=PLppQ61iuprWia7W0IQQeI5rhYYG8gW67q"
     result = transfer_playlist(url, target="spotify")
     print("✅ New Playlist:", result["playlist_url"])
     print("⚠️ Missing tracks:", result["missing"])

@@ -16,10 +16,11 @@ def main():
     
     try:
         # Run streamlit app
+        port = os.getenv("PORT", "8501")
         subprocess.run([
             sys.executable, "-m", "streamlit", "run", "app.py",
-            "--server.port", "8501",
-            "--server.address", "localhost",
+            "--server.port", port,
+            "--server.address", "0.0.0.0",
             "--browser.gatherUsageStats", "false"
         ])
     except KeyboardInterrupt:

@@ -14,21 +14,25 @@ from dotenv import load_dotenv
 # ---------- LOAD ENV ----------
 load_dotenv()
 
-# Try to load from Streamlit secrets first (for deployment), then fallback to .env
+# Import configuration
+from config import config
+
+# Load environment variables with multiple fallbacks
 try:
     import streamlit as st
-    SPOTIFY_CLIENT_ID = st.secrets.get("SPOTIFY_CLIENT_ID") or os.getenv("SPOTIFY_CLIENT_ID")
-    SPOTIFY_CLIENT_SECRET = st.secrets.get("SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIFY_CLIENT_SECRET")
-    SPOTIFY_REDIRECT_URI = st.secrets.get("SPOTIFY_REDIRECT_URI") or os.getenv("SPOTIFY_REDIRECT_URI")
-    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    # Try Streamlit secrets first (for Streamlit Cloud)
+    SPOTIFY_CLIENT_ID = st.secrets.get("SPOTIFY_CLIENT_ID") or config.SPOTIFY_CLIENT_ID
+    SPOTIFY_CLIENT_SECRET = st.secrets.get("SPOTIFY_CLIENT_SECRET") or config.SPOTIFY_CLIENT_SECRET
+    SPOTIFY_REDIRECT_URI = st.secrets.get("SPOTIFY_REDIRECT_URI") or config.SPOTIFY_REDIRECT_URI
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY") or config.OPENAI_API_KEY
 except:
-    # Fallback to environment variables
-    SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-    SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-    SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    # Fallback to config (for Railway, Vercel, etc.)
+    SPOTIFY_CLIENT_ID = config.SPOTIFY_CLIENT_ID
+    SPOTIFY_CLIENT_SECRET = config.SPOTIFY_CLIENT_SECRET
+    SPOTIFY_REDIRECT_URI = config.SPOTIFY_REDIRECT_URI
+    OPENAI_API_KEY = config.OPENAI_API_KEY
 
-SPOTIFY_SCOPE = os.getenv("SPOTIFY_SCOPE", "playlist-modify-public")
+SPOTIFY_SCOPE = config.SPOTIFY_SCOPE
 
 # Validate required environment variables
 required_vars = {

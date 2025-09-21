@@ -25,8 +25,5 @@ USER appuser
 # Expose port (Railway will set PORT environment variable)
 EXPOSE $PORT
 
-# Health check
-HEALTHCHECK CMD curl --fail http://localhost:$PORT/_stcore/health
-
 # Run the application with dynamic port
 CMD ["sh", "-c", "streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true --browser.gatherUsageStats false"]

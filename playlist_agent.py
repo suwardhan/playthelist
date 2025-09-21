@@ -50,12 +50,20 @@ openai.api_key = OPENAI_API_KEY
 
 # ---------- INIT ----------
 ytmusic = YTMusic()
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-    client_id=SPOTIFY_CLIENT_ID,
-    client_secret=SPOTIFY_CLIENT_SECRET,
-    redirect_uri=SPOTIFY_REDIRECT_URI,
-    scope=SPOTIFY_SCOPE
-))
+
+# Configure Spotify OAuth with proper settings for production
+try:
+    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
+        client_id=SPOTIFY_CLIENT_ID,
+        client_secret=SPOTIFY_CLIENT_SECRET,
+        redirect_uri=SPOTIFY_REDIRECT_URI,
+        scope=SPOTIFY_SCOPE,
+        cache_path=None,  # Don't cache tokens in production
+        show_dialog=False  # Don't show browser dialog
+    ))
+except Exception as e:
+    logging.error(f"Failed to initialize Spotify: {e}")
+    sp = None
 
 # ---------- HELPERS ----------
 def clean_title(title):

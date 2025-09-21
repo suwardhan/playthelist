@@ -6,10 +6,13 @@ PORT=${PORT:-8501}
 
 echo "🚀 Starting PlayTheList on port $PORT"
 echo "🔧 Environment: PORT=$PORT"
+echo "🌐 Binding to 0.0.0.0:$PORT"
 
-# Start Streamlit app
+# Start Streamlit app with explicit configuration
 exec streamlit run app.py \
   --server.port $PORT \
   --server.address 0.0.0.0 \
+  --server.headless true \
   --browser.gatherUsageStats false \
-  --server.headless true
+  --server.enableCORS true \
+  --server.enableXsrfProtection false

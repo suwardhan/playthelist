@@ -13,6 +13,6 @@ exec streamlit run app.py \
   --server.port $PORT \
   --server.address 0.0.0.0 \
   --server.headless true \
-  --browser.gatherUsageStats false \
+  --global.gatherUsageStats false \
   --server.enableCORS true \
   --server.enableXsrfProtection false

@@ -5,9 +5,10 @@
 PORT=${PORT:-8501}
 
 echo "🚀 Starting PlayTheList on port $PORT"
+echo "🔧 Environment: PORT=$PORT"
 
 # Start Streamlit app
-streamlit run app.py \
+exec streamlit run app.py \
   --server.port $PORT \
   --server.address 0.0.0.0 \
   --browser.gatherUsageStats false \

@@ -26,4 +26,4 @@ USER appuser
 EXPOSE $PORT
 
 # Run the application with dynamic port
-CMD ["sh", "-c", "streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true --browser.gatherUsageStats false"]
+CMD ["./start.sh"]
